@@ -12,11 +12,30 @@ from django.utils.text import force_text
 class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
 
     _sql_check_constraint = " CONSTRAINT %(name)s CHECK (%(check)s)"
-    _sql_select_default_constraint_name = "SELECT d.name FROM sys.default_constraints d " \
-                                          "INNER JOIN sys.columns c ON d.parent_column_id = c.column_id " \
-                                          "INNER JOIN sys.tables t ON d.parent_object_id = t.object_id " \
-                                          "INNER JOIN sys.schemas s ON t.schema_id = s.schema_id " \
-                                          "WHERE t.name = %(table)s AND c.name = %(column)s"
+    _sql_select_default_constraint_name = "SELECT" \
+                                          " d.name " \
+                                          "FROM sys.default_constraints d " \
+                                          "INNER JOIN sys.tables t ON" \
+                                          " d.parent_object_id = t.object_id " \
+                                          "INNER JOIN sys.columns c ON" \
+                                          " d.parent_object_id = c.object_id AND" \
+                                          " d.parent_column_id = c.column_id " \
+                                          "INNER JOIN sys.schemas s ON" \
+                                          " t.schema_id = s.schema_id " \
+                                          "WHERE" \
+                                          " t.name = %(table)s AND" \
+                                          " c.name = %(column)s"
+    _sql_select_foreign_key_constraints = "SELECT" \
+                                          " po.name AS table_name," \
+                                          " co.name AS constraint_name " \
+                                          "FROM sys.foreign_key_columns fkc " \
+                                          "INNER JOIN sys.objects co ON" \
+                                          " fkc.constraint_object_id = co.object_id " \
+                                          "INNER JOIN sys.tables po ON" \
+                                          " fkc.parent_object_id = po.object_id " \
+                                          "INNER JOIN sys.tables ro ON" \
+                                          " fkc.referenced_object_id = ro.object_id " \
+                                          "WHERE ro.name = %(table)s"
     sql_alter_column_default = "ADD DEFAULT %(default)s FOR %(column)s"
     sql_alter_column_no_default = "DROP CONSTRAINT %(name)s"
     sql_alter_column_not_null = "ALTER COLUMN %(column)s %(type)s NOT NULL"
@@ -291,13 +310,14 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
                 has_result=True
             )
             if result:
-                sql = self.sql_alter_column % {
-                    "table": self.quote_name(model._meta.db_table),
-                    "changes": self.sql_alter_column_no_default % {
-                        "name": self.quote_name(next(iter(result))),
+                for row in result:
+                    sql = self.sql_alter_column % {
+                        "table": self.quote_name(model._meta.db_table),
+                        "changes": self.sql_alter_column_no_default % {
+                            "name": self.quote_name(next(iter(row))),
+                        }
                     }
-                }
-                self.execute(sql)
+                    self.execute(sql)
         # Reset connection if required
         if self.connection.features.connection_persists_old_columns:
             self.connection.close()
@@ -355,13 +375,14 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
                 has_result=True
             )
             if result:
-                sql = self.sql_alter_column % {
-                    "table": self.quote_name(model._meta.db_table),
-                    "changes": self.sql_alter_column_no_default % {
-                        "name": self.quote_name(next(iter(result))),
+                for row in result:
+                    sql = self.sql_alter_column % {
+                        "table": self.quote_name(model._meta.db_table),
+                        "changes": self.sql_alter_column_no_default % {
+                            "name": self.quote_name(next(iter(row))),
+                        }
                     }
-                }
-                self.execute(sql)
+                    self.execute(sql)
         # Add an index, if required
         if field.db_index and not field.unique:
             self.deferred_sql.append(self._create_index_sql(model, [field]))
@@ -445,6 +466,30 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             if field.rel.through._meta.auto_created:
                 self.create_model(field.rel.through)
 
+    def delete_model(self, model):
+        """
+        Deletes a model from the database.
+        """
+        # Delete the foreign key constraints
+        result = self.execute(
+            self._sql_select_foreign_key_constraints % {
+                "table": self.quote_value(model._meta.db_table),
+            },
+            has_result = True
+        )
+        if result:
+            for table, constraint in result:
+                sql = self.sql_alter_column % {
+                    "table": self.quote_name(table),
+                    "changes": self.sql_alter_column_no_default % {
+                        "name": self.quote_name(constraint),
+                    }
+                }
+                self.execute(sql)
+
+        # Delete the table
+        super(DatabaseSchemaEditor, self).delete_model(model)
+
     def execute(self, sql, params=[], has_result=False):
         """
         Executes the given SQL statement, with optional parameters.
@@ -462,7 +507,7 @@ class DatabaseSchemaEditor(BaseDatabaseSchemaEditor):
             with self.connection.cursor() as cursor:
                 cursor.execute(sql, params)
                 if has_result:
-                    result = cursor.fetchone()
+                    result = cursor.fetchall()
         return result
 
     def prepare_default(self, value):
