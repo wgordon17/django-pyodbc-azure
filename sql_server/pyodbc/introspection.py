@@ -93,8 +93,12 @@ class DatabaseIntrospection(BaseDatabaseIntrospection):
         of SQL_BIGAUTOFIELD, which maps to the 'BigAutoField' value in the DATA_TYPES_REVERSE dict.
         """
 
-        # map pyodbc's cursor.columns to db-api cursor description
-        columns = [[c[3], c[4], None, c[6], c[6], c[8], c[10], c[12]] for c in cursor.columns(table=table_name)]
+        # map T-SQL's `sp_columns` stored procedure to db-api cursor description
+        # https://docs.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-columns-transact-sql
+        columns = [
+            [c[3], c[4], None, c[6], c[6], c[8], c[10], c[12]]
+            for c in cursor.execute('exec sp_columns %s', [table_name]).fetchall()
+        ]
         items = []
         for column in columns:
             if identity_check and self._is_auto_field(cursor, table_name, column[0]):
